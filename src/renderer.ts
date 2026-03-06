@@ -195,53 +195,13 @@ export class Renderer {
   }
 
   /**
-   * Draw raw segments/arcs from Ruby reference data
-   */
-  drawRubyRoutes(routes: { segments: any[]; arcs: any[] }[]): void {
-    const ctx = this.ctx;
-    for (let netId = 0; netId < routes.length; netId++) {
-      const route = routes[netId];
-      const color = NET_COLORS[netId % NET_COLORS.length];
-      ctx.strokeStyle = color;
-      ctx.lineCap = 'round';
-      ctx.globalAlpha = 0.8;
-
-      for (const seg of (route.segments || [])) {
-        ctx.lineWidth = Math.max((seg.width || 1200) * this.scale, 1.5);
-        const [x1, y1] = this.toScreen(seg.x1, seg.y1);
-        const [x2, y2] = this.toScreen(seg.x2, seg.y2);
-        ctx.beginPath();
-        ctx.moveTo(x1, y1);
-        ctx.lineTo(x2, y2);
-        ctx.stroke();
-      }
-
-      for (const arc of (route.arcs || [])) {
-        ctx.lineWidth = Math.max((arc.width || 1200) * this.scale, 1.5);
-        const [cx, cy] = this.toScreen(arc.cx, arc.cy);
-        const r = arc.r * this.scale;
-        if (r > 0.5) {
-          ctx.beginPath();
-          let diff = arc.endAngle - arc.startAngle;
-          if (diff > Math.PI) diff -= 2 * Math.PI;
-          if (diff < -Math.PI) diff += 2 * Math.PI;
-          ctx.arc(cx, cy, r, arc.startAngle, arc.endAngle, diff < 0);
-          ctx.stroke();
-        }
-      }
-    }
-    ctx.globalAlpha = 1;
-  }
-
-  /**
    * Full render of the current state
    */
   render(
     router: Router,
     obstacles: Set<string>,
     connections: { from: string; to: string }[],
-    showTriangulation: boolean = true,
-    rubyRoutes?: { segments: any[]; arcs: any[] }[]
+    showTriangulation: boolean = true
   ): void {
     this.updateTransform();
     this.clear();
@@ -249,11 +209,7 @@ export class Renderer {
     this.drawNetConnections(connections, router.getVertices());
     this.drawVertices(router, obstacles);
 
-    if (rubyRoutes) {
-      this.drawRubyRoutes(rubyRoutes);
-    } else {
-      const segments = router.generateDrawnSegments();
-      this.drawRoutes(segments);
-    }
+    const segments = router.generateDrawnSegments();
+    this.drawRoutes(segments);
   }
 }

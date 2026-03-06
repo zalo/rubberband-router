@@ -4,7 +4,6 @@
 import { Router } from './router';
 import { Renderer } from './renderer';
 import { Vertex, DEFAULT_PIN_RADIUS, DEFAULT_CLEARANCE, DEFAULT_TRACE_WIDTH } from './types';
-import rubyRefData from './ruby_reference.json';
 
 interface AppState {
   mode: 'place_pin' | 'place_obstacle' | 'connect' | 'delete';
@@ -15,9 +14,9 @@ interface AppState {
   pins: { name: string; x: number; y: number; isObstacle: boolean }[];
   connections: { from: string; to: string }[];
   selectedPin: string | null;
+  draggingPin: string | null;
   isRouted: boolean;
   showTriangulation: boolean;
-  showRubyRef: boolean;
   traceWidth: number;
   clearance: number;
   pinRadius: number;
@@ -36,9 +35,9 @@ function createApp(): void {
     pins: [],
     connections: [],
     selectedPin: null,
+    draggingPin: null,
     isRouted: false,
     showTriangulation: true,
-    showRubyRef: false,
     traceWidth: DEFAULT_TRACE_WIDTH,
     clearance: DEFAULT_CLEARANCE,
     pinRadius: DEFAULT_PIN_RADIUS,
@@ -61,8 +60,6 @@ function createApp(): void {
   const routeBtn = document.getElementById('route-btn') as HTMLButtonElement;
   const randomBtn = document.getElementById('random-btn') as HTMLButtonElement;
   const triToggle = document.getElementById('tri-toggle') as HTMLInputElement;
-  const rubyToggle = document.getElementById('ruby-toggle') as HTMLInputElement;
-  const loadRubyBtn = document.getElementById('load-ruby-btn') as HTMLButtonElement;
   const statusEl = document.getElementById('status') as HTMLElement;
   const traceWidthInput = document.getElementById('trace-width') as HTMLInputElement;
   const clearanceInput = document.getElementById('clearance') as HTMLInputElement;
@@ -97,35 +94,6 @@ function createApp(): void {
   triToggle.addEventListener('change', async () => {
     state.showTriangulation = triToggle.checked;
     await render();
-  });
-
-  rubyToggle.addEventListener('change', async () => {
-    state.showRubyRef = rubyToggle.checked;
-    if (state.showRubyRef) {
-      setStatus('Showing Ruby reference output (star preset)');
-    }
-    await render();
-  });
-
-  loadRubyBtn.addEventListener('click', async () => {
-    // Load the exact same graph the Ruby reference used
-    const graph = (rubyRefData as any).graph;
-    state.pins = [];
-    state.connections = [];
-    state.pinCount = 0;
-    Vertex.resetIds();
-
-    for (const vd of graph.vertices) {
-      if (vd.name && vd.name !== 'border' && vd.name !== 'corner' && vd.name !== '') {
-        state.pins.push({ name: vd.name, x: vd.x, y: vd.y, isObstacle: vd.name.startsWith('O') });
-      }
-    }
-    for (const n of graph.nets) {
-      state.connections.push({ from: n.from, to: n.to });
-    }
-    await rebuildRouter();
-    await render();
-    setStatus('Loaded Ruby reference graph. Toggle "Ruby reference" to compare, or click Route.');
   });
 
   async function rebuildRouter(): Promise<void> {
@@ -222,10 +190,7 @@ function createApp(): void {
 
     const obstacles = new Set(state.pins.filter(p => p.isObstacle).map(p => p.name));
     state.renderer.setBoardBounds(0, 0, BOARD_SIZE, BOARD_SIZE);
-    state.renderer.render(
-      state.router, obstacles, state.connections, state.showTriangulation,
-      state.showRubyRef ? (rubyRefData as any).routes : undefined
-    );
+    state.renderer.render(state.router, obstacles, state.connections, state.showTriangulation);
   }
 
   function findNearestPin(worldX: number, worldY: number, maxDist: number = BOARD_SIZE * 0.03): string | null {
@@ -238,7 +203,67 @@ function createApp(): void {
     return nearest;
   }
 
-  canvas.addEventListener('click', async (e) => {
+  // Drag support: mousedown starts drag or click action, mousemove drags, mouseup ends
+  let dragStartX = 0, dragStartY = 0;
+  let didDrag = false;
+  let dragRafPending = false;
+
+  canvas.addEventListener('mousedown', (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const [wx, wy] = state.renderer.fromScreen(e.clientX - rect.left, e.clientY - rect.top);
+    dragStartX = wx; dragStartY = wy;
+    didDrag = false;
+
+    // Check if we're near a pin to drag
+    const nearest = findNearestPin(wx, wy);
+    if (nearest) {
+      state.draggingPin = nearest;
+      canvas.style.cursor = 'grabbing';
+    }
+  });
+
+  canvas.addEventListener('mousemove', (e) => {
+    if (!state.draggingPin) return;
+    didDrag = true;
+    const rect = canvas.getBoundingClientRect();
+    const [wx, wy] = state.renderer.fromScreen(e.clientX - rect.left, e.clientY - rect.top);
+
+    // Update pin position
+    const pin = state.pins.find(p => p.name === state.draggingPin);
+    if (pin) {
+      pin.x = Math.max(0, Math.min(BOARD_SIZE, wx));
+      pin.y = Math.max(0, Math.min(BOARD_SIZE, wy));
+    }
+
+    // Throttle rebuild+render via requestAnimationFrame
+    if (!dragRafPending) {
+      dragRafPending = true;
+      requestAnimationFrame(async () => {
+        dragRafPending = false;
+        await rebuildRouter();
+        if (state.isRouted && state.connections.length > 0) {
+          await doRoute();
+        } else {
+          await render();
+        }
+      });
+    }
+  });
+
+  canvas.addEventListener('mouseup', async (e) => {
+    canvas.style.cursor = 'crosshair';
+    if (state.draggingPin && didDrag) {
+      // Final reroute after drag
+      state.draggingPin = null;
+      await rebuildRouter();
+      if (state.connections.length > 0) await doRoute();
+      else await render();
+      return;
+    }
+    state.draggingPin = null;
+    if (didDrag) return; // was a drag, not a click
+
+    // Handle as click
     const rect = canvas.getBoundingClientRect();
     const [wx, wy] = state.renderer.fromScreen(e.clientX - rect.left, e.clientY - rect.top);
     if (wx < 0 || wx > BOARD_SIZE || wy < 0 || wy > BOARD_SIZE) return;
