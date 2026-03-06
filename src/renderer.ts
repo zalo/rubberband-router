@@ -272,29 +272,57 @@ export class Renderer {
       }
     }
 
-    // Draw cut capacities (colored by usage)
+    // Draw filled triangles to show the CDT structure
+    if (snapshot.triangles && snapshot.triangles.length > 0) {
+      for (let i = 0; i < snapshot.triangles.length; i++) {
+        const tri = snapshot.triangles[i];
+        const [ax, ay] = this.toScreen(tri.x1, tri.y1);
+        const [bx, by] = this.toScreen(tri.x2, tri.y2);
+        const [cx, cy] = this.toScreen(tri.x3, tri.y3);
+        // Alternate colors for adjacent triangles
+        const hue = (i * 37) % 360;
+        ctx.fillStyle = `hsla(${hue}, 40%, 25%, 0.15)`;
+        ctx.beginPath();
+        ctx.moveTo(ax, ay);
+        ctx.lineTo(bx, by);
+        ctx.lineTo(cx, cy);
+        ctx.closePath();
+        ctx.fill();
+      }
+    }
+
+    // Draw cut capacities as colored edges
     if (snapshot.cuts && snapshot.cuts.length > 0) {
       for (const cut of snapshot.cuts) {
         const [x1, y1] = this.toScreen(cut.x1, cut.y1);
         const [x2, y2] = this.toScreen(cut.x2, cut.y2);
-        const ratio = cut.cap > 0 ? cut.freeCap / cut.cap : 0;
-        // Green = lots of free space, yellow = getting tight, red = nearly full
-        const r = ratio < 0.5 ? 255 : Math.round(255 * (1 - ratio) * 2);
-        const g = ratio > 0.5 ? 255 : Math.round(255 * ratio * 2);
-        ctx.strokeStyle = `rgba(${r}, ${g}, 40, ${cut.usage > 0 ? 0.5 : 0.15})`;
-        ctx.lineWidth = cut.usage > 0 ? 2 : 1;
+        const ratio = cut.cap > 0 ? Math.max(0, cut.freeCap / cut.cap) : 0;
+        // Green = open, yellow = getting tight, red = nearly full/overloaded
+        const r = ratio < 0.5 ? 255 : Math.round(255 * 2 * (1 - ratio));
+        const g = ratio > 0.5 ? 255 : Math.round(255 * 2 * ratio);
+        const alpha = cut.usage > 0 ? 0.7 : 0.25;
+        const width = cut.usage > 0 ? 3 : 1;
+        ctx.strokeStyle = `rgba(${r}, ${g}, 40, ${alpha})`;
+        ctx.lineWidth = width;
         ctx.beginPath();
         ctx.moveTo(x1, y1);
         ctx.lineTo(x2, y2);
         ctx.stroke();
 
-        // Show usage count at midpoint for used cuts
+        // Show capacity bar at midpoint for used cuts
         if (cut.usage > 0) {
           const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+          // Draw a small capacity bar
+          const barW = 20, barH = 4;
+          ctx.fillStyle = 'rgba(0,0,0,0.6)';
+          ctx.fillRect(mx - barW/2, my - barH/2 - 6, barW, barH);
+          ctx.fillStyle = `rgb(${r}, ${g}, 40)`;
+          ctx.fillRect(mx - barW/2, my - barH/2 - 6, barW * ratio, barH);
+          // Usage label
           ctx.fillStyle = '#fff';
-          ctx.font = '9px monospace';
+          ctx.font = 'bold 8px monospace';
           ctx.textAlign = 'center';
-          ctx.fillText(`${cut.usage}`, mx, my - 3);
+          ctx.fillText(`${cut.usage}t`, mx, my + 6);
         }
       }
     }
@@ -330,15 +358,42 @@ export class Renderer {
       this.drawRoutes(snapshot.segments);
     }
 
-    // Draw region markers
+    // Draw region markers with offset arrows
     if (snapshot.regions) {
       for (const r of snapshot.regions) {
-        if (!r.incident) continue;
         const [sx, sy] = this.toScreen(r.rx, r.ry);
+        const [vx, vy] = this.toScreen(r.x, r.y);
+
+        // Draw offset arrow from vertex to region position (if offset is significant)
+        const offsetDist = Math.hypot(sx - vx, sy - vy);
+        if (offsetDist > 2) {
+          ctx.beginPath();
+          ctx.moveTo(vx, vy);
+          ctx.lineTo(sx, sy);
+          ctx.strokeStyle = r.incident ? 'rgba(88, 166, 255, 0.4)' : 'rgba(255, 100, 100, 0.4)';
+          ctx.lineWidth = 1;
+          ctx.stroke();
+        }
+
+        // Region dot
         ctx.beginPath();
-        ctx.arc(sx, sy, 4, 0, Math.PI * 2);
-        ctx.fillStyle = 'rgba(88, 166, 255, 0.5)';
+        ctx.arc(sx, sy, r.incident ? 5 : 3, 0, Math.PI * 2);
+        ctx.fillStyle = r.incident ? 'rgba(88, 166, 255, 0.6)' : 'rgba(255, 100, 100, 0.4)';
         ctx.fill();
+        ctx.strokeStyle = r.incident ? '#58a6ff' : '#f85149';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+
+        // Region label (only for non-border vertices with interesting state)
+        if (r.name && r.name !== 'border' && r.name !== 'corner' && r.name !== 'obstacle_boundary') {
+          ctx.fillStyle = r.incident ? '#8db9ff' : '#ff8888';
+          ctx.font = '8px monospace';
+          ctx.textAlign = 'center';
+          ctx.fillText(r.name, sx, sy - 8);
+          // Show neighbor count
+          ctx.fillStyle = '#666';
+          ctx.fillText(`n:${r.neighborCount}`, sx, sy + 12);
+        }
       }
     }
 

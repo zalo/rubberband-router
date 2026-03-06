@@ -1409,7 +1409,7 @@ export class Router {
   }
 
   /** Capture minimal rendering state for debug snapshot */
-  captureState(): Pick<DebugSnapshot, 'vertices' | 'edges' | 'regions' | 'segments' | 'cuts'> {
+  captureState(): Pick<DebugSnapshot, 'vertices' | 'edges' | 'regions' | 'segments' | 'cuts' | 'triangles'> {
     const vertices = this.vertices
       .filter(v => v.name !== 'border')
       .map(v => ({
@@ -1448,12 +1448,28 @@ export class Router {
       x: r.vertex.x, y: r.vertex.y,
       rx: r.rx, ry: r.ry,
       incident: r.incident,
-      neighborCount: r.neighbors.length
+      neighborCount: r.neighbors.length,
+      name: r.vertex.name || String(r.vertex.id),
+      regionId: (r as any).regionId ?? r.vertex.id,
     }));
+
+    // Reconstruct triangles from CDT edges for Voronoi-style region rendering
+    const triangles: { x1: number; y1: number; x2: number; y2: number; x3: number; y3: number }[] = [];
+    for (const v of this.vertices) {
+      for (let i = 0; i < v.neighbors.length; i++) {
+        const a = v.neighbors[i];
+        for (let j = i + 1; j < v.neighbors.length; j++) {
+          const b = v.neighbors[j];
+          if (a.neighbors.includes(b) && v.id < a.id && v.id < b.id) {
+            triangles.push({ x1: v.x, y1: v.y, x2: a.x, y2: a.y, x3: b.x, y3: b.y });
+          }
+        }
+      }
+    }
 
     const segments = this.drawnSegments.slice();
 
-    return { vertices, edges, regions, segments, cuts };
+    return { vertices, edges, regions, segments, cuts, triangles };
   }
 
   /** Emit a debug step if callback is set */

@@ -11,7 +11,8 @@ export interface DebugSnapshot {
   cuts: { x1: number; y1: number; x2: number; y2: number; cap: number; freeCap: number; usage: number }[];  // Cut capacities
   paths: { netId: number; points: { x: number; y: number }[]; color: string }[];
   segments: DrawnSegment[];  // Tangent-rendered segments (only after rubberband)
-  regions: { x: number; y: number; rx: number; ry: number; incident: boolean; neighborCount: number }[];
+  regions: { x: number; y: number; rx: number; ry: number; incident: boolean; neighborCount: number; name: string; regionId: number }[];
+  triangles: { x1: number; y1: number; x2: number; y2: number; x3: number; y3: number }[];
   highlight?: {
     vertices?: { x: number; y: number; color: string; label?: string }[];
     edges?: { x1: number; y1: number; x2: number; y2: number; color: string }[];

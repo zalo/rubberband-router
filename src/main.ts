@@ -136,6 +136,7 @@ function createApp(): void {
           paths: partial.paths || [],
           segments: partial.segments || [],
           regions: partial.regions || [],
+          triangles: partial.triangles || [],
           highlight: partial.highlight,
         };
         debugManager.addSnapshot(snapshot);
@@ -247,6 +248,7 @@ function createApp(): void {
         paths: [],
         segments: capturedState.segments,
         regions: capturedState.regions,
+        triangles: capturedState.triangles,
       });
     }
 
