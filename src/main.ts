@@ -229,20 +229,18 @@ function createApp(): void {
     const rect = canvas.getBoundingClientRect();
     const [wx, wy] = state.renderer.fromScreen(e.clientX - rect.left, e.clientY - rect.top);
 
-    // Update pin position
     const pin = state.pins.find(p => p.name === state.draggingPin);
     if (pin) {
       pin.x = Math.max(0, Math.min(BOARD_SIZE, wx));
       pin.y = Math.max(0, Math.min(BOARD_SIZE, wy));
     }
 
-    // Throttle rebuild+render via requestAnimationFrame
     if (!dragRafPending) {
       dragRafPending = true;
       requestAnimationFrame(async () => {
         dragRafPending = false;
         await rebuildRouter();
-        if (state.isRouted && state.connections.length > 0) {
+        if (state.connections.length > 0) {
           await doRoute();
         } else {
           await render();
