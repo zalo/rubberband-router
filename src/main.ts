@@ -208,7 +208,7 @@ function createApp(): void {
   let didDrag = false;
   let dragRafPending = false;
 
-  canvas.addEventListener('mousedown', (e) => {
+  canvas.addEventListener('pointerdown', (e) => {
     const rect = canvas.getBoundingClientRect();
     const [wx, wy] = state.renderer.fromScreen(e.clientX - rect.left, e.clientY - rect.top);
     dragStartX = wx; dragStartY = wy;
@@ -218,11 +218,12 @@ function createApp(): void {
     const nearest = findNearestPin(wx, wy);
     if (nearest) {
       state.draggingPin = nearest;
+      canvas.setPointerCapture(e.pointerId);
       canvas.style.cursor = 'grabbing';
     }
   });
 
-  canvas.addEventListener('mousemove', (e) => {
+  canvas.addEventListener('pointermove', (e) => {
     if (!state.draggingPin) return;
     didDrag = true;
     const rect = canvas.getBoundingClientRect();
@@ -250,7 +251,7 @@ function createApp(): void {
     }
   });
 
-  canvas.addEventListener('mouseup', async (e) => {
+  canvas.addEventListener('pointerup', async (e) => {
     canvas.style.cursor = 'crosshair';
     if (state.draggingPin && didDrag) {
       // Final reroute after drag
