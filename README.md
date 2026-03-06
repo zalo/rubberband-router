@@ -4,7 +4,7 @@ A TypeScript port of [Stefan Salewski's rubberband topological PCB router](https
 
 The algorithm is based on the region concept described in [Tal Dayan's 1997 PhD thesis](http://www.delorie.com/archives/browse.cgi?p=geda-user/2015/10/11/08:56:15) for generating rubber band sketches that connect terminal points without crossing.
 
-**[Live Demo](https://selstead.github.io/rubberband-router/)**
+**[Live Demo](https://zalo.github.io/rubberband-router/)**
 
 ## How it works
 
