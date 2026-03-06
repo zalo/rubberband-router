@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Rubberband Topological Router</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      body {
+        font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+        background: #0d1117;
+        color: #c9d1d9;
+        height: 100vh;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+      }
+      header {
+        background: #161b22;
+        border-bottom: 1px solid #30363d;
+        padding: 8px 16px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex-shrink: 0;
+      }
+      header h1 {
+        font-size: 15px;
+        font-weight: 600;
+        color: #e6edf3;
+        white-space: nowrap;
+      }
+      header h1 span { color: #58a6ff; }
+      .main-content {
+        display: flex;
+        flex: 1;
+        overflow: hidden;
+      }
+      .sidebar {
+        width: 260px;
+        background: #161b22;
+        border-right: 1px solid #30363d;
+        padding: 12px;
+        overflow-y: auto;
+        flex-shrink: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+      .panel {
+        background: #0d1117;
+        border: 1px solid #30363d;
+        border-radius: 6px;
+        padding: 10px;
+      }
+      .panel-title {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        color: #8b949e;
+        margin-bottom: 8px;
+        font-weight: 600;
+      }
+      .mode-buttons {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 4px;
+      }
+      .mode-btn {
+        background: #21262d;
+        border: 1px solid #30363d;
+        color: #c9d1d9;
+        padding: 6px 8px;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 12px;
+        transition: all 0.15s;
+        text-align: center;
+      }
+      .mode-btn:hover { background: #30363d; border-color: #484f58; }
+      .mode-btn.active { background: #1f6feb; border-color: #388bfd; color: white; }
+      .action-btn {
+        background: #238636;
+        border: 1px solid #2ea043;
+        color: white;
+        padding: 8px 12px;
+        border-radius: 6px;
+        cursor: pointer;
+        font-size: 13px;
+        font-weight: 600;
+        width: 100%;
+        transition: all 0.15s;
+      }
+      .action-btn:hover { background: #2ea043; }
+      .action-btn.secondary { background: #21262d; border-color: #30363d; color: #c9d1d9; }
+      .action-btn.secondary:hover { background: #30363d; }
+      .action-btn.danger { background: #da3633; border-color: #f85149; }
+      .action-btn.danger:hover { background: #b62324; }
+      .param-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 6px;
+      }
+      .param-row label {
+        font-size: 12px;
+        color: #8b949e;
+      }
+      .param-row input, .param-row select {
+        width: 80px;
+        background: #0d1117;
+        border: 1px solid #30363d;
+        color: #c9d1d9;
+        padding: 3px 6px;
+        border-radius: 4px;
+        font-size: 12px;
+        text-align: right;
+      }
+      select {
+        width: 100% !important;
+        text-align: left !important;
+        padding: 6px 8px !important;
+        cursor: pointer;
+      }
+      .toggle-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 12px;
+      }
+      .toggle-row input[type="checkbox"] {
+        accent-color: #1f6feb;
+      }
+      .canvas-container {
+        flex: 1;
+        position: relative;
+        overflow: hidden;
+      }
+      #canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
+        cursor: crosshair;
+      }
+      #status {
+        position: absolute;
+        bottom: 12px;
+        left: 12px;
+        background: rgba(22, 27, 34, 0.9);
+        border: 1px solid #30363d;
+        padding: 6px 12px;
+        border-radius: 6px;
+        font-size: 12px;
+        color: #8b949e;
+        backdrop-filter: blur(4px);
+      }
+      .shortcuts {
+        font-size: 10px;
+        color: #484f58;
+        line-height: 1.6;
+      }
+      .shortcuts kbd {
+        background: #21262d;
+        border: 1px solid #30363d;
+        padding: 1px 4px;
+        border-radius: 3px;
+        font-family: monospace;
+        font-size: 10px;
+      }
+      .btn-group {
+        display: flex;
+        gap: 4px;
+      }
+      .btn-group .action-btn {
+        flex: 1;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1><span>Rubberband</span> Topological Router</h1>
+    </header>
+    <div class="main-content">
+      <div class="sidebar">
+        <div class="panel">
+          <div class="panel-title">Tools</div>
+          <div class="mode-buttons">
+            <button class="mode-btn active" data-mode="place_pin">Terminal</button>
+            <button class="mode-btn" data-mode="place_obstacle">Obstacle</button>
+            <button class="mode-btn" data-mode="connect">Connect</button>
+            <button class="mode-btn" data-mode="delete">Delete</button>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-title">Actions</div>
+          <div style="display:flex;flex-direction:column;gap:4px;">
+            <button id="route-btn" class="action-btn">Route (R)</button>
+            <div class="btn-group">
+              <button id="random-btn" class="action-btn secondary">Generate (G)</button>
+              <button id="clear-btn" class="action-btn danger">Clear</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-title">Presets</div>
+          <select id="preset-select">
+            <option value="">Load a preset...</option>
+            <option value="parallel">Parallel Traces</option>
+            <option value="crossing">Crossing Nets</option>
+            <option value="star">Star Pattern</option>
+            <option value="grid4x4">4x4 Grid</option>
+            <option value="grid6x6">6x6 Grid</option>
+          </select>
+        </div>
+
+        <div class="panel">
+          <div class="panel-title">Random Generator</div>
+          <div class="param-row">
+            <label>Pin count</label>
+            <input id="pin-count" type="number" value="32" min="4" max="200">
+          </div>
+          <div class="param-row">
+            <label>Net count</label>
+            <input id="net-count" type="number" value="10" min="1" max="100">
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-title">Parameters</div>
+          <div class="param-row">
+            <label>Trace width</label>
+            <input id="trace-width" type="number" value="1200" min="100" max="5000" step="100">
+          </div>
+          <div class="param-row">
+            <label>Clearance</label>
+            <input id="clearance" type="number" value="800" min="100" max="5000" step="100">
+          </div>
+          <div class="param-row">
+            <label>Pin radius</label>
+            <input id="pin-radius" type="number" value="1000" min="100" max="5000" step="100">
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-title">Display</div>
+          <div class="toggle-row">
+            <input id="tri-toggle" type="checkbox" checked>
+            <label for="tri-toggle">Show triangulation (T)</label>
+          </div>
+          <div class="toggle-row" style="margin-top:4px">
+            <input id="ruby-toggle" type="checkbox">
+            <label for="ruby-toggle">Ruby reference (star)</label>
+          </div>
+          <button id="load-ruby-btn" class="action-btn secondary" style="margin-top:6px;font-size:11px">Load Ruby Star Graph</button>
+        </div>
+
+        <div class="panel">
+          <div class="panel-title">Keyboard Shortcuts</div>
+          <div class="shortcuts">
+            <kbd>1</kbd> Terminal &nbsp; <kbd>2</kbd> Obstacle<br>
+            <kbd>3</kbd> Connect &nbsp; <kbd>4</kbd> Delete<br>
+            <kbd>R</kbd> Route &nbsp; <kbd>G</kbd> Generate<br>
+            <kbd>T</kbd> Toggle triangulation
+          </div>
+        </div>
+      </div>
+      <div class="canvas-container">
+        <canvas id="canvas"></canvas>
+        <div id="status">Click to place terminals, then connect and route</div>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
