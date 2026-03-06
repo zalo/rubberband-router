@@ -2,8 +2,9 @@
 import { Router } from './router';
 import type { DrawnSegment } from './router';
 import { Vertex } from './types';
+import type { DebugSnapshot } from './debug';
 
-const NET_COLORS = [
+export const NET_COLORS = [
   '#e6194b', '#3cb44b', '#4363d8', '#f58231', '#911eb4',
   '#42d4f4', '#f032e6', '#bfef45', '#fabed4', '#469990',
   '#dcbeff', '#9A6324', '#800000', '#aaffc3', '#808000',
@@ -246,5 +247,193 @@ export class Renderer {
 
     const segments = router.generateDrawnSegments();
     this.drawRoutes(segments);
+  }
+
+  /**
+   * Draw a debug snapshot with annotations
+   */
+  drawDebugSnapshot(snapshot: DebugSnapshot, showTriangulation: boolean = true): void {
+    this.updateTransform();
+    this.clear();
+
+    const ctx = this.ctx;
+
+    // Draw CDT edges
+    if (showTriangulation && snapshot.edges) {
+      ctx.strokeStyle = 'rgba(100, 100, 140, 0.15)';
+      ctx.lineWidth = 0.5;
+      for (const e of snapshot.edges) {
+        const [x1, y1] = this.toScreen(e.x1, e.y1);
+        const [x2, y2] = this.toScreen(e.x2, e.y2);
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2, y2);
+        ctx.stroke();
+      }
+    }
+
+    // Draw cut capacities (colored by usage)
+    if (snapshot.cuts && snapshot.cuts.length > 0) {
+      for (const cut of snapshot.cuts) {
+        const [x1, y1] = this.toScreen(cut.x1, cut.y1);
+        const [x2, y2] = this.toScreen(cut.x2, cut.y2);
+        const ratio = cut.cap > 0 ? cut.freeCap / cut.cap : 0;
+        // Green = lots of free space, yellow = getting tight, red = nearly full
+        const r = ratio < 0.5 ? 255 : Math.round(255 * (1 - ratio) * 2);
+        const g = ratio > 0.5 ? 255 : Math.round(255 * ratio * 2);
+        ctx.strokeStyle = `rgba(${r}, ${g}, 40, ${cut.usage > 0 ? 0.5 : 0.15})`;
+        ctx.lineWidth = cut.usage > 0 ? 2 : 1;
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2, y2);
+        ctx.stroke();
+
+        // Show usage count at midpoint for used cuts
+        if (cut.usage > 0) {
+          const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+          ctx.fillStyle = '#fff';
+          ctx.font = '9px monospace';
+          ctx.textAlign = 'center';
+          ctx.fillText(`${cut.usage}`, mx, my - 3);
+        }
+      }
+    }
+
+    // Draw vertices
+    if (snapshot.vertices) {
+      for (const v of snapshot.vertices) {
+        if (v.name === 'border' || v.name === 'corner') continue;
+        const [sx, sy] = this.toScreen(v.x, v.y);
+        const sr = v.radius * this.scale;
+
+        if (v.isObstacle) {
+          ctx.fillStyle = 'rgba(180, 50, 50, 0.6)';
+          ctx.strokeStyle = '#e74c3c';
+        } else if (v.name && v.name !== '' && v.name !== 'no') {
+          ctx.fillStyle = 'rgba(150, 150, 170, 0.4)';
+          ctx.strokeStyle = 'rgba(180, 180, 200, 0.5)';
+        } else {
+          ctx.fillStyle = 'rgba(100, 100, 120, 0.3)';
+          ctx.strokeStyle = 'rgba(120, 120, 140, 0.3)';
+        }
+
+        ctx.beginPath();
+        ctx.arc(sx, sy, Math.max(sr, 2), 0, Math.PI * 2);
+        ctx.fill();
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
+    }
+
+    // Draw routed segments
+    if (snapshot.segments && snapshot.segments.length > 0) {
+      this.drawRoutes(snapshot.segments);
+    }
+
+    // Draw region markers
+    if (snapshot.regions) {
+      for (const r of snapshot.regions) {
+        if (!r.incident) continue;
+        const [sx, sy] = this.toScreen(r.rx, r.ry);
+        ctx.beginPath();
+        ctx.arc(sx, sy, 4, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(88, 166, 255, 0.5)';
+        ctx.fill();
+      }
+    }
+
+    // Draw highlight overlay
+    if (snapshot.highlight) {
+      // Highlighted path
+      if (snapshot.highlight.path && snapshot.highlight.path.length > 1) {
+        ctx.beginPath();
+        const [sx, sy] = this.toScreen(snapshot.highlight.path[0].x, snapshot.highlight.path[0].y);
+        ctx.moveTo(sx, sy);
+        for (let i = 1; i < snapshot.highlight.path.length; i++) {
+          const [px, py] = this.toScreen(snapshot.highlight.path[i].x, snapshot.highlight.path[i].y);
+          ctx.lineTo(px, py);
+        }
+        ctx.strokeStyle = '#ffeb3b';
+        ctx.lineWidth = 3;
+        ctx.setLineDash([8, 4]);
+        ctx.globalAlpha = 0.9;
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.globalAlpha = 1;
+      }
+
+      // Highlighted edges
+      if (snapshot.highlight.edges) {
+        for (const e of snapshot.highlight.edges) {
+          const [x1, y1] = this.toScreen(e.x1, e.y1);
+          const [x2, y2] = this.toScreen(e.x2, e.y2);
+          ctx.beginPath();
+          ctx.moveTo(x1, y1);
+          ctx.lineTo(x2, y2);
+          ctx.strokeStyle = e.color;
+          ctx.lineWidth = 2;
+          ctx.globalAlpha = 0.8;
+          ctx.stroke();
+          ctx.globalAlpha = 1;
+        }
+      }
+
+      // Highlighted vertices
+      if (snapshot.highlight.vertices) {
+        for (const v of snapshot.highlight.vertices) {
+          const [sx, sy] = this.toScreen(v.x, v.y);
+          ctx.beginPath();
+          ctx.arc(sx, sy, 6, 0, Math.PI * 2);
+          ctx.fillStyle = v.color;
+          ctx.globalAlpha = 0.9;
+          ctx.fill();
+          ctx.globalAlpha = 1;
+
+          if (v.label) {
+            ctx.fillStyle = '#ffffff';
+            ctx.font = 'bold 11px monospace';
+            ctx.textAlign = 'center';
+            ctx.fillText(v.label, sx, sy - 10);
+          }
+        }
+      }
+    }
+
+    // Draw step label
+    this.drawStepLabel(snapshot.description, snapshot.step, snapshot.type);
+  }
+
+  drawStepLabel(text: string, step: number, type: string): void {
+    const ctx = this.ctx;
+    const w = this.canvas.width;
+
+    // Background bar
+    ctx.fillStyle = 'rgba(22, 27, 34, 0.85)';
+    ctx.fillRect(0, 0, w, 32);
+
+    // Type badge
+    const typeColors: Record<string, string> = {
+      cdt: '#58a6ff',
+      dijkstra_found: '#ffeb3b',
+      dijkstra_start: '#f0883e',
+      region_split: '#a371f7',
+      sort_attached: '#7ee787',
+      prepare_steps: '#79c0ff',
+      nubly: '#f778ba',
+      fix_crossings: '#ffa657',
+      done: '#3fb950',
+    };
+    const badgeColor = typeColors[type] || '#8b949e';
+
+    ctx.fillStyle = badgeColor;
+    ctx.font = 'bold 11px monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText(`[${type}]`, 10, 20);
+
+    // Description text
+    ctx.fillStyle = '#e6edf3';
+    ctx.font = '12px system-ui, sans-serif';
+    const badgeWidth = ctx.measureText(`[${type}]`).width;
+    ctx.fillText(text, 10 + badgeWidth + 10, 20);
   }
 }

@@ -251,6 +251,18 @@
             <input id="tri-toggle" type="checkbox" checked>
             <label for="tri-toggle">Show triangulation (T)</label>
           </div>
+          <div class="toggle-row" style="margin-top:6px">
+            <input id="debug-toggle" type="checkbox">
+            <label for="debug-toggle">Debug mode (D)</label>
+          </div>
+          <div id="debug-controls" style="display:none;margin-top:6px">
+            <div style="display:flex;gap:4px">
+              <button id="debug-back" class="action-btn secondary" style="flex:0 0 36px;font-size:11px;padding:6px 0">&lt;</button>
+              <button id="debug-step" class="action-btn secondary" style="flex:1;font-size:11px">Step</button>
+              <button id="debug-reset" class="action-btn secondary" style="flex:1;font-size:11px">Reset</button>
+            </div>
+            <div id="debug-info" style="font-size:11px;color:#8b949e;margin-top:4px">Step 0/0</div>
+          </div>
         </div>
 
         <div class="panel">
@@ -260,7 +272,8 @@
             <kbd>3</kbd> Connect &nbsp; <kbd>4</kbd> Delete<br>
             <kbd>5</kbd> Box<br>
             <kbd>R</kbd> Route &nbsp; <kbd>G</kbd> Generate<br>
-            <kbd>T</kbd> Toggle triangulation
+            <kbd>T</kbd> Toggle triangulation<br>
+            <kbd>D</kbd> Toggle debug mode
           </div>
         </div>
       </div>

@@ -16,6 +16,7 @@ import {
 } from './geometry';
 import { PriorityQueue } from './priority-queue';
 import { CDT } from './cdt';
+import type { DebugSnapshot } from './debug';
 
 export interface RouteResult {
   success: boolean;
@@ -49,6 +50,7 @@ export class Router {
   private obstaclePolygons: { vertices: Vertex[]; clusterId: number }[] = [];
   netlist: NetDesc[] = [];
   drawnSegments: DrawnSegment[] = [];
+  onDebugStep?: (snapshot: Partial<DebugSnapshot>) => void;
 
   constructor(b1x: number, b1y: number, b2x: number, b2y: number) {
     this.b1x = b1x;
@@ -227,6 +229,11 @@ export class Router {
     this.edgesInCluster = new SymmetricMap();
     this.cdt.edgesInConstrainedPolygons((v1, v2) => {
       this.edgesInCluster.set(v1, v2, true);
+    });
+
+    this.emitDebug({
+      type: 'cdt',
+      description: `CDT: ${this.vertices.length} vertices, ${this.vertices.reduce((s, v) => s + v.neighbors.length, 0) / 2 | 0} edges`
     });
   }
 
@@ -759,6 +766,16 @@ export class Router {
     const path = this.dijkstra(startNode, to, netDesc, maxDetourFactor);
     if (!path) return false;
 
+    // Emit debug: dijkstra found path
+    this.emitDebug({
+      type: 'dijkstra_found',
+      description: `Net ${netId} (${from}\u2192${to}): Dijkstra found path through ${path.length} vertices`,
+      highlight: {
+        path: path.map(r => ({ x: r.vertex.x, y: r.vertex.y })),
+        vertices: path.map(r => ({ x: r.vertex.x, y: r.vertex.y, color: '#ffeb3b', label: r.vertex.name }))
+      }
+    });
+
     const first = path[path.length - 1];
     const last = path[0];
     if (first === last) return false;
@@ -898,6 +915,12 @@ export class Router {
       }
     }
 
+    // Emit debug: region split complete
+    this.emitDebug({
+      type: 'region_split',
+      description: `Net ${netId}: Split ${path.length - 2} regions along path`
+    });
+
     // Create steps for the path
     let pstep: Step | null = null;
     for (let i = 0; i < path.length; i++) {
@@ -947,6 +970,10 @@ export class Router {
     for (const v of this.vertices) {
       v.sortAttachedNets();
     }
+    this.emitDebug({
+      type: 'sort_attached',
+      description: `Sorted attached nets at ${this.vertices.filter(v => v.attachedNets.length > 1).length} vertices`
+    });
   }
 
   // Prepare step radii
@@ -965,6 +992,11 @@ export class Router {
         }
       }
     }
+    this.generateDrawnSegments();
+    this.emitDebug({
+      type: 'prepare_steps',
+      description: `Prepared step radii for ${this.vertices.filter(v => v.attachedNets.length > 0).length} vertices`
+    });
   }
 
   // Check if tangents cross (for concave collapse)
@@ -994,9 +1026,11 @@ export class Router {
    * Rubberband optimization: adjust step radii, collapse concave bends
    */
   nubly(collapse: boolean = false): void {
+    let nublyPass = 0;
     let replaced = true;
     while (replaced) {
       replaced = false;
+      nublyPass++;
       for (const cv of this.vertices) {
         for (let si = cv.attachedNets.length - 1; si >= 0; si--) {
           const step = cv.attachedNets[si];
@@ -1038,7 +1072,6 @@ export class Router {
             replaced = true;
             const pvx = pv.x, pvy = pv.y, nvx = nv.x, nvy = nv.y;
 
-            // ppv: previous-previous tangent crossing
             let ppv: Vertex;
             const pp = prevStep.pstep;
             if (pp) {
@@ -1046,7 +1079,6 @@ export class Router {
               ppv = ppKkk ? new Vertex(ppKkk[0], ppKkk[1]) : pv;
             } else { ppv = pv; }
 
-            // nnv: next-next tangent crossing
             let nnv: Vertex;
             const nn = nxtStep.nstep;
             if (nn) {
@@ -1054,7 +1086,6 @@ export class Router {
               nnv = nnKkk ? new Vertex(nnKkk[0], nnKkk[1]) : nv;
             } else { nnv = nv; }
 
-            // Helper vertices for polygon shape
             let hx = nvx - pvx, hy = nvy - pvy;
             let vec_x: number, vec_y: number;
             if (step.rgt) { vec_x = hy; vec_y = -hx; }
@@ -1064,11 +1095,38 @@ export class Router {
             const hv4 = new Vertex(pvx - hx + vec_x, pvy - hy + vec_y);
             const hv5 = new Vertex(nvx + hx + vec_x, nvy + hy + vec_y);
 
-            // Find candidate vertices in polygon [ppv, hv0, nnv, hv3]
             let rep = verticesInPolygon(
               [ppv, hv0, nnv, hv3],
               this.vertices
             ).filter(v => v !== pv && v !== nv && v !== ppv && v !== cv && v !== nnv && v !== hv3);
+
+            // Debug: emit collapse step with polygon and candidates
+            if (this.onDebugStep) {
+              this.generateDrawnSegments();
+              const polyVerts = [ppv, hv0, nnv, hv3].map(v => ({ x: v.x, y: v.y, color: '#ff0' }));
+              const candidateVerts = rep.map(v => ({ x: v.x, y: v.y, color: '#0ff', label: v.name }));
+              this.emitDebug({
+                type: 'nubly_collapse',
+                description: `Collapse at ${cv.name || cv.id}: tangents cross, ${rep.length} candidates in polygon. prev=${pv.name||pv.id}, next=${nv.name||nv.id}`,
+                highlight: {
+                  vertices: [
+                    { x: cv.x, y: cv.y, color: '#f00', label: 'collapse' },
+                    { x: pv.x, y: pv.y, color: '#0f0', label: 'prev' },
+                    { x: nv.x, y: nv.y, color: '#0f0', label: 'next' },
+                    { x: kkk[0], y: kkk[1], color: '#ff0', label: 'tangent crossing' },
+                    ...polyVerts,
+                    ...candidateVerts,
+                  ],
+                  edges: [
+                    // Search polygon outline
+                    { x1: ppv.x, y1: ppv.y, x2: hv0.x, y2: hv0.y, color: '#ff0' },
+                    { x1: hv0.x, y1: hv0.y, x2: nnv.x, y2: nnv.y, color: '#ff0' },
+                    { x1: nnv.x, y1: nnv.y, x2: hv3.x, y2: hv3.y, color: '#ff0' },
+                    { x1: hv3.x, y1: hv3.y, x2: ppv.x, y2: ppv.y, color: '#ff0' },
+                  ]
+                }
+              });
+            }
 
             if (rep.length > 0) {
               const net = step.netDesc;
@@ -1080,11 +1138,35 @@ export class Router {
               pv.tradius = prevStep.radius;
               nv.trgt = nxtStep.rgt;
               nv.tradius = nxtStep.radius;
+              const hullInput = [...rep];
               rep = this.newConvexVertices(rep, pv, nv, hv4, hv5);
+
+              // Debug: emit Apollonius hull result
+              if (this.onDebugStep) {
+                this.emitDebug({
+                  type: 'apollonius_hull',
+                  description: `Apollonius hull: ${hullInput.length} input -> ${rep.length} hull vertices`,
+                  highlight: {
+                    vertices: [
+                      ...hullInput.map(v => ({ x: v.x, y: v.y, color: '#888', label: `r=${Math.round(v.tradius)}` })),
+                      ...rep.map(v => ({ x: v.x, y: v.y, color: '#0ff', label: 'hull' })),
+                      { x: pv.x, y: pv.y, color: '#0f0', label: 'prev' },
+                      { x: nv.x, y: nv.y, color: '#0f0', label: 'next' },
+                    ]
+                  }
+                });
+              }
             }
             this.smartReplace(step, rep);
           }
         }
+      }
+      if (replaced) {
+        this.generateDrawnSegments();
+        this.emitDebug({
+          type: 'nubly',
+          description: `Rubberband pass ${nublyPass}: nubly(collapse=${collapse})`
+        });
       }
     }
   }
@@ -1257,7 +1339,8 @@ export class Router {
    * Fix crossing pairs by swapping radius (ring position) at shared vertices.
    * Works iteratively: generate segments, find crossings, try swaps, repeat.
    */
-  fixCrossingPairs(): void {
+  fixCrossingPairs(): number {
+    let totalSwaps = 0;
     for (const vert of this.vertices) {
       if (vert.attachedNets.length < 2) continue;
       const steps = vert.attachedNets;
@@ -1307,6 +1390,7 @@ export class Router {
             const after = totalCrossings();
             if (after < before) {
               improved = true;
+              totalSwaps++;
             } else {
               // Revert
               steps[j].radius = steps[i].radius;
@@ -1315,6 +1399,68 @@ export class Router {
           }
         }
       }
+    }
+    this.generateDrawnSegments();
+    this.emitDebug({
+      type: 'fix_crossings',
+      description: `Fix crossings: ${totalSwaps} swaps, ${this.countCrossings()} crossings remaining`
+    });
+    return totalSwaps;
+  }
+
+  /** Capture minimal rendering state for debug snapshot */
+  captureState(): Pick<DebugSnapshot, 'vertices' | 'edges' | 'regions' | 'segments' | 'cuts'> {
+    const vertices = this.vertices
+      .filter(v => v.name !== 'border')
+      .map(v => ({
+        x: v.x, y: v.y, name: v.name, radius: v.core,
+        isObstacle: v.name === 'obstacle_boundary' || v.cid >= 0
+      }));
+
+    const edges: { x1: number; y1: number; x2: number; y2: number }[] = [];
+    for (const v of this.vertices) {
+      for (const n of v.neighbors) {
+        if (v.id < n.id) {
+          edges.push({ x1: v.x, y1: v.y, x2: n.x, y2: n.y });
+        }
+      }
+    }
+
+    // Capture cut capacities
+    const cuts: DebugSnapshot['cuts'] = [];
+    const seenCuts = new Set<string>();
+    for (const v of this.vertices) {
+      for (const n of v.neighbors) {
+        const key = Math.min(v.id, n.id) + '_' + Math.max(v.id, n.id);
+        if (seenCuts.has(key)) continue;
+        seenCuts.add(key);
+        const cut = this.newcuts.get(v, n);
+        if (cut) {
+          cuts.push({
+            x1: v.x, y1: v.y, x2: n.x, y2: n.y,
+            cap: cut.cap, freeCap: cut.freeCap, usage: cut.cl.length
+          });
+        }
+      }
+    }
+
+    const regions = this.regions.filter(r => r != null).map(r => ({
+      x: r.vertex.x, y: r.vertex.y,
+      rx: r.rx, ry: r.ry,
+      incident: r.incident,
+      neighborCount: r.neighbors.length
+    }));
+
+    const segments = this.drawnSegments.slice();
+
+    return { vertices, edges, regions, segments, cuts };
+  }
+
+  /** Emit a debug step if callback is set */
+  private emitDebug(partial: Partial<DebugSnapshot>): void {
+    if (this.onDebugStep) {
+      const state = this.captureState();
+      this.onDebugStep({ ...state, ...partial } as Partial<DebugSnapshot>);
     }
   }
 

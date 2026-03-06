@@ -5,6 +5,7 @@ import { Router } from './router';
 import { Renderer } from './renderer';
 import { Vertex, DEFAULT_PIN_RADIUS, DEFAULT_CLEARANCE, DEFAULT_TRACE_WIDTH } from './types';
 import { mergeBoxes, projectPointOutOfPolygons, type BoxObstacle } from './obstacles';
+import { DebugManager, type DebugSnapshot } from './debug';
 
 interface AppState {
   mode: 'place_pin' | 'place_obstacle' | 'connect' | 'delete' | 'draw_box';
@@ -28,6 +29,7 @@ interface AppState {
 }
 
 const BOARD_SIZE = 140000;
+const debugManager = new DebugManager();
 
 function createApp(): void {
   const canvas = document.getElementById('canvas') as HTMLCanvasElement;
@@ -76,6 +78,12 @@ function createApp(): void {
   const pinCountInput = document.getElementById('pin-count') as HTMLInputElement;
   const netCountInput = document.getElementById('net-count') as HTMLInputElement;
   const presetSelect = document.getElementById('preset-select') as HTMLSelectElement;
+  const debugToggle = document.getElementById('debug-toggle') as HTMLInputElement;
+  const debugControls = document.getElementById('debug-controls') as HTMLElement;
+  const debugStepBtn = document.getElementById('debug-step') as HTMLButtonElement;
+  const debugBackBtn = document.getElementById('debug-back') as HTMLButtonElement;
+  const debugResetBtn = document.getElementById('debug-reset') as HTMLButtonElement;
+  const debugInfo = document.getElementById('debug-info') as HTMLElement;
 
   function setStatus(msg: string): void {
     statusEl.textContent = msg;
@@ -103,13 +111,36 @@ function createApp(): void {
 
   triToggle.addEventListener('change', async () => {
     state.showTriangulation = triToggle.checked;
-    await render();
+    if (debugManager.active && debugManager.getCurrent()) {
+      renderDebugSnapshot();
+    } else {
+      await render();
+    }
   });
 
   async function rebuildRouter(): Promise<void> {
     Vertex.resetIds();
     state.router = new Router(0, 0, BOARD_SIZE, BOARD_SIZE);
     state.router.insertBorder();
+
+    // Attach debug callback if debug mode is active
+    if (debugManager.active) {
+      state.router.onDebugStep = (partial) => {
+        const snapshot: DebugSnapshot = {
+          step: 0,
+          type: partial.type || 'unknown',
+          description: partial.description || '',
+          vertices: partial.vertices || [],
+          edges: partial.edges || [],
+          cuts: partial.cuts || [],
+          paths: partial.paths || [],
+          segments: partial.segments || [],
+          regions: partial.regions || [],
+          highlight: partial.highlight,
+        };
+        debugManager.addSnapshot(snapshot);
+      };
+    }
 
     // Merge boxes first so we can project pins out of obstacles
     state.mergedPolygons = mergeBoxes(state.boxes);
@@ -158,6 +189,11 @@ function createApp(): void {
       return;
     }
 
+    // Reset debug snapshots when starting a new route
+    if (debugManager.active) {
+      debugManager.reset();
+    }
+
     const t0 = performance.now();
     let routed = 0;
     const total = state.router.netlist.length;
@@ -198,10 +234,46 @@ function createApp(): void {
     }
     const crossings = state.router.countCrossings();
 
+    // Emit final "done" debug step
+    if (debugManager.active && state.router.onDebugStep) {
+      const capturedState = state.router.captureState();
+      debugManager.addSnapshot({
+        step: 0,
+        type: 'done',
+        description: `Done: ${routed}/${total} routed, ${crossings} crossings`,
+        vertices: capturedState.vertices,
+        edges: capturedState.edges,
+        cuts: capturedState.cuts,
+        paths: [],
+        segments: capturedState.segments,
+        regions: capturedState.regions,
+      });
+    }
+
     const elapsed = (performance.now() - t0).toFixed(1);
     state.isRouted = true;
-    setStatus(`Routed ${routed}/${total} nets in ${elapsed}ms${crossings > 0 ? `, ${crossings} visual overlaps` : ''}`);
-    await render();
+
+    if (debugManager.active && debugManager.totalSteps > 0) {
+      // In debug mode, show the first snapshot
+      debugManager.resetToStart();
+      updateDebugUI();
+      renderDebugSnapshot();
+      setStatus(`Debug: ${debugManager.totalSteps} steps captured in ${elapsed}ms. Use Step/Back to navigate.`);
+    } else {
+      setStatus(`Routed ${routed}/${total} nets in ${elapsed}ms${crossings > 0 ? `, ${crossings} visual overlaps` : ''}`);
+      await render();
+    }
+  }
+
+  function updateDebugUI(): void {
+    debugInfo.textContent = `Step ${debugManager.currentStep + 1}/${debugManager.totalSteps}`;
+  }
+
+  function renderDebugSnapshot(): void {
+    const snapshot = debugManager.getCurrent();
+    if (!snapshot) return;
+    state.renderer.setBoardBounds(0, 0, BOARD_SIZE, BOARD_SIZE);
+    state.renderer.drawDebugSnapshot(snapshot, state.showTriangulation);
   }
 
   async function render(): Promise<void> {
@@ -548,6 +620,40 @@ function createApp(): void {
   clearanceInput.addEventListener('change', () => { state.clearance = parseInt(clearanceInput.value) || DEFAULT_CLEARANCE; });
   pinRadiusInput.addEventListener('change', () => { state.pinRadius = parseInt(pinRadiusInput.value) || DEFAULT_PIN_RADIUS; });
 
+  // Debug mode controls
+  debugToggle.addEventListener('change', () => {
+    debugManager.active = debugToggle.checked;
+    debugControls.style.display = debugToggle.checked ? 'block' : 'none';
+    if (!debugToggle.checked) {
+      debugManager.reset();
+      debugInfo.textContent = 'Step 0/0';
+    }
+  });
+
+  debugStepBtn.addEventListener('click', () => {
+    const snapshot = debugManager.stepForward();
+    if (snapshot) {
+      updateDebugUI();
+      renderDebugSnapshot();
+    }
+  });
+
+  debugBackBtn.addEventListener('click', () => {
+    const snapshot = debugManager.stepBackward();
+    if (snapshot) {
+      updateDebugUI();
+      renderDebugSnapshot();
+    }
+  });
+
+  debugResetBtn.addEventListener('click', () => {
+    const snapshot = debugManager.resetToStart();
+    if (snapshot) {
+      updateDebugUI();
+      renderDebugSnapshot();
+    }
+  });
+
   document.addEventListener('keydown', (e) => {
     if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
     switch (e.key) {
@@ -559,6 +665,7 @@ function createApp(): void {
       case 'r': routeBtn.click(); break;
       case 'g': randomBtn.click(); break;
       case 't': triToggle.checked = !triToggle.checked; triToggle.dispatchEvent(new Event('change')); break;
+      case 'd': debugToggle.checked = !debugToggle.checked; debugToggle.dispatchEvent(new Event('change')); break;
     }
   });
 
