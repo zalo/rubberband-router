@@ -45,6 +45,8 @@ export class Router {
   private newcuts: SymmetricMap<Cut> = new SymmetricMap();
   private edgesInCluster: SymmetricMap<boolean> = new SymmetricMap();
   private pathId: number = 0;
+  private nextObstacleClusterId: number = 100; // start high to avoid conflicts with pin cids
+  private obstaclePolygons: { vertices: Vertex[]; clusterId: number }[] = [];
   netlist: NetDesc[] = [];
   drawnSegments: DrawnSegment[] = [];
 
@@ -89,6 +91,47 @@ export class Router {
       this.insertVertex('border', a0 - dx0, y);
       this.insertVertex('border', b0 + dx0, y);
     }
+  }
+
+  /**
+   * Insert a polygon obstacle into the CDT.
+   * Samples vertices along edges, inserts CDT constraints, and marks
+   * boundary vertices so Dijkstra penalizes paths through them.
+   * Interior edges will be blocked via edgesInCluster.
+   */
+  insertPolygonObstacle(vertices: { x: number; y: number }[]): void {
+    if (vertices.length < 3) return;
+
+    const SAMPLE_INTERVAL = 5000; // sample a vertex every ~5000 units along edges
+    const clusterId = this.nextObstacleClusterId++;
+
+    // Build sampled boundary vertices for this polygon
+    const boundaryVerts: Vertex[] = [];
+    for (let i = 0; i < vertices.length; i++) {
+      const a = vertices[i];
+      const b = vertices[(i + 1) % vertices.length];
+      const edgeLen = Math.hypot(b.x - a.x, b.y - a.y);
+      const samples = Math.max(1, Math.round(edgeLen / SAMPLE_INTERVAL));
+
+      for (let s = 0; s < samples; s++) {
+        const t = s / samples;
+        const px = a.x + (b.x - a.x) * t;
+        const py = a.y + (b.y - a.y) * t;
+        const v = this.insertVertex('obstacle_boundary', px, py, 0, DEFAULT_CLEARANCE);
+        v.cid = clusterId;
+        boundaryVerts.push(v);
+      }
+    }
+
+    // Insert CDT constraints between consecutive boundary vertices
+    for (let i = 0; i < boundaryVerts.length; i++) {
+      const v1 = boundaryVerts[i];
+      const v2 = boundaryVerts[(i + 1) % boundaryVerts.length];
+      this.cdt.insertConstraint(v1, v2);
+    }
+
+    // Store polygon info for marking interior edges after triangulation
+    this.obstaclePolygons.push({ vertices: boundaryVerts, clusterId });
   }
 
   generateTestVertices(count: number): void {
@@ -179,6 +222,12 @@ export class Router {
         }
       }
     }
+
+    // Mark interior edges of obstacle polygons as blocked
+    this.edgesInCluster = new SymmetricMap();
+    this.cdt.edgesInConstrainedPolygons((v1, v2) => {
+      this.edgesInCluster.set(v1, v2, true);
+    });
   }
 
   generateRandomNetlist(netCount: number): void {
@@ -436,8 +485,8 @@ export class Router {
         if (onlyOuter && vcid > -1) return;
 
         let newDistance = oldDistance + Math.hypot(w.vertex.x - x, w.vertex.y - y);
-        // Heavy penalty for routing through boundary vertices to keep traces inside
-        if (w.vertex.name === 'border' || w.vertex.name === 'corner') {
+        // Heavy penalty for routing through boundary or obstacle vertices
+        if (w.vertex.name === 'border' || w.vertex.name === 'corner' || w.vertex.name === 'obstacle_boundary') {
           newDistance += MBD;
         }
         const outerDistance = newDistance;

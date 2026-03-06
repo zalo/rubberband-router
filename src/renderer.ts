@@ -194,6 +194,39 @@ export class Renderer {
     ctx.globalAlpha = 1;
   }
 
+  drawPolygonObstacles(polygons: { x: number; y: number }[][]): void {
+    const ctx = this.ctx;
+    for (const poly of polygons) {
+      if (poly.length < 3) continue;
+      ctx.beginPath();
+      const [sx, sy] = this.toScreen(poly[0].x, poly[0].y);
+      ctx.moveTo(sx, sy);
+      for (let i = 1; i < poly.length; i++) {
+        const [px, py] = this.toScreen(poly[i].x, poly[i].y);
+        ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(180, 50, 50, 0.25)';
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(220, 60, 60, 0.7)';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+  }
+
+  drawBoxPreview(x1: number, y1: number, x2: number, y2: number): void {
+    const ctx = this.ctx;
+    const [sx1, sy1] = this.toScreen(Math.min(x1, x2), Math.min(y1, y2));
+    const [sx2, sy2] = this.toScreen(Math.max(x1, x2), Math.max(y1, y2));
+    ctx.setLineDash([6, 4]);
+    ctx.strokeStyle = 'rgba(255, 100, 100, 0.8)';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(sx1, sy1, sx2 - sx1, sy2 - sy1);
+    ctx.fillStyle = 'rgba(180, 50, 50, 0.15)';
+    ctx.fillRect(sx1, sy1, sx2 - sx1, sy2 - sy1);
+    ctx.setLineDash([]);
+  }
+
   /**
    * Full render of the current state
    */
@@ -201,10 +234,12 @@ export class Renderer {
     router: Router,
     obstacles: Set<string>,
     connections: { from: string; to: string }[],
-    showTriangulation: boolean = true
+    showTriangulation: boolean = true,
+    polygonObstacles: { x: number; y: number }[][] = []
   ): void {
     this.updateTransform();
     this.clear();
+    this.drawPolygonObstacles(polygonObstacles);
     if (showTriangulation) this.drawTriangulation(router);
     this.drawNetConnections(connections, router.getVertices());
     this.drawVertices(router, obstacles);

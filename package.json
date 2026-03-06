@@ -13,6 +13,7 @@
     "vite": "^6.4.1"
   },
   "dependencies": {
+    "@flatten-js/core": "^1.6.10",
     "@ruby/wasm-wasi": "^2.8.1",
     "cdt2d": "^1.0.0",
     "robust-predicates": "^3.0.2"

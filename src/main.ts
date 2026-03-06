@@ -4,9 +4,10 @@
 import { Router } from './router';
 import { Renderer } from './renderer';
 import { Vertex, DEFAULT_PIN_RADIUS, DEFAULT_CLEARANCE, DEFAULT_TRACE_WIDTH } from './types';
+import { mergeBoxes, projectPointOutOfPolygons, type BoxObstacle } from './obstacles';
 
 interface AppState {
-  mode: 'place_pin' | 'place_obstacle' | 'connect' | 'delete';
+  mode: 'place_pin' | 'place_obstacle' | 'connect' | 'delete' | 'draw_box';
   router: Router | null;
   renderer: Renderer;
   boardSize: number;
@@ -20,6 +21,10 @@ interface AppState {
   traceWidth: number;
   clearance: number;
   pinRadius: number;
+  boxes: BoxObstacle[];
+  mergedPolygons: { x: number; y: number }[][];
+  boxDragStart: { x: number; y: number } | null;
+  boxDragCurrent: { x: number; y: number } | null;
 }
 
 const BOARD_SIZE = 140000;
@@ -41,6 +46,10 @@ function createApp(): void {
     traceWidth: DEFAULT_TRACE_WIDTH,
     clearance: DEFAULT_CLEARANCE,
     pinRadius: DEFAULT_PIN_RADIUS,
+    boxes: [],
+    mergedPolygons: [],
+    boxDragStart: null,
+    boxDragCurrent: null,
   };
 
   state.renderer.setBoardBounds(0, 0, BOARD_SIZE, BOARD_SIZE);
@@ -82,7 +91,8 @@ function createApp(): void {
       place_pin: 'Click to place terminals',
       place_obstacle: 'Click to place obstacles',
       connect: 'Click two terminals to connect them',
-      delete: 'Click a terminal or obstacle to remove it'
+      delete: 'Click a terminal or obstacle to remove it',
+      draw_box: 'Click and drag to draw a rectangular obstacle'
     };
     setStatus(modeLabels[mode]);
   }
@@ -101,12 +111,22 @@ function createApp(): void {
     state.router = new Router(0, 0, BOARD_SIZE, BOARD_SIZE);
     state.router.insertBorder();
 
+    // Merge boxes first so we can project pins out of obstacles
+    state.mergedPolygons = mergeBoxes(state.boxes);
+
     for (const pin of state.pins) {
+      // If pin is inside a polygon obstacle, project it to the nearest boundary
+      const projected = projectPointOutOfPolygons(pin.x, pin.y, state.mergedPolygons);
       state.router.insertVertex(
-        pin.name, pin.x, pin.y,
+        pin.name, projected.x, projected.y,
         pin.isObstacle ? state.pinRadius * 2 : state.pinRadius,
         state.clearance
       );
+    }
+
+    // Insert polygon obstacles into CDT
+    for (const poly of state.mergedPolygons) {
+      state.router.insertPolygonObstacle(poly);
     }
 
     await state.router.finishInit();
@@ -190,7 +210,15 @@ function createApp(): void {
 
     const obstacles = new Set(state.pins.filter(p => p.isObstacle).map(p => p.name));
     state.renderer.setBoardBounds(0, 0, BOARD_SIZE, BOARD_SIZE);
-    state.renderer.render(state.router, obstacles, state.connections, state.showTriangulation);
+    state.renderer.render(state.router, obstacles, state.connections, state.showTriangulation, state.mergedPolygons);
+
+    // Draw box preview while dragging
+    if (state.boxDragStart && state.boxDragCurrent) {
+      state.renderer.drawBoxPreview(
+        state.boxDragStart.x, state.boxDragStart.y,
+        state.boxDragCurrent.x, state.boxDragCurrent.y
+      );
+    }
   }
 
   function findNearestPin(worldX: number, worldY: number, maxDist: number = BOARD_SIZE * 0.03): string | null {
@@ -214,6 +242,13 @@ function createApp(): void {
     dragStartX = wx; dragStartY = wy;
     didDrag = false;
 
+    if (state.mode === 'draw_box') {
+      state.boxDragStart = { x: wx, y: wy };
+      state.boxDragCurrent = { x: wx, y: wy };
+      canvas.setPointerCapture(e.pointerId);
+      return;
+    }
+
     // Check if we're near a pin to drag
     const nearest = findNearestPin(wx, wy);
     if (nearest) {
@@ -224,6 +259,21 @@ function createApp(): void {
   });
 
   canvas.addEventListener('pointermove', (e) => {
+    if (state.mode === 'draw_box' && state.boxDragStart) {
+      const rect = canvas.getBoundingClientRect();
+      const [wx, wy] = state.renderer.fromScreen(e.clientX - rect.left, e.clientY - rect.top);
+      state.boxDragCurrent = { x: wx, y: wy };
+      // Draw preview
+      if (!dragRafPending) {
+        dragRafPending = true;
+        requestAnimationFrame(async () => {
+          dragRafPending = false;
+          await render();
+        });
+      }
+      return;
+    }
+
     if (!state.draggingPin) return;
     didDrag = true;
     const rect = canvas.getBoundingClientRect();
@@ -251,6 +301,34 @@ function createApp(): void {
 
   canvas.addEventListener('pointerup', async (e) => {
     canvas.style.cursor = 'crosshair';
+
+    // Handle draw_box mode completion
+    if (state.mode === 'draw_box' && state.boxDragStart && state.boxDragCurrent) {
+      const sx = state.boxDragStart.x;
+      const sy = state.boxDragStart.y;
+      const ex = state.boxDragCurrent.x;
+      const ey = state.boxDragCurrent.y;
+      state.boxDragStart = null;
+      state.boxDragCurrent = null;
+
+      const bx = Math.min(sx, ex);
+      const by = Math.min(sy, ey);
+      const bw = Math.abs(ex - sx);
+      const bh = Math.abs(ey - sy);
+
+      // Only add if box has meaningful size
+      if (bw > BOARD_SIZE * 0.005 && bh > BOARD_SIZE * 0.005) {
+        state.boxes.push({ x: bx, y: by, w: bw, h: bh });
+        await rebuildRouter();
+        if (state.connections.length > 0) await doRoute();
+        else await render();
+        setStatus(`Added box obstacle (${state.boxes.length} total)`);
+      } else {
+        await render();
+      }
+      return;
+    }
+
     if (state.draggingPin && didDrag) {
       // Final reroute after drag
       state.draggingPin = null;
@@ -310,6 +388,18 @@ function createApp(): void {
         break;
       }
       case 'delete': {
+        // Check if click is inside a box obstacle first
+        const boxIdx = state.boxes.findIndex(b =>
+          wx >= b.x && wx <= b.x + b.w && wy >= b.y && wy <= b.y + b.h
+        );
+        if (boxIdx >= 0) {
+          state.boxes.splice(boxIdx, 1);
+          await rebuildRouter();
+          if (state.connections.length > 0) await doRoute();
+          else await render();
+          setStatus(`Deleted box obstacle (${state.boxes.length} remaining)`);
+          break;
+        }
         const nearest = findNearestPin(wx, wy);
         if (nearest) {
           state.pins = state.pins.filter(p => p.name !== nearest);
@@ -328,6 +418,8 @@ function createApp(): void {
   clearBtn.addEventListener('click', async () => {
     state.pins = [];
     state.connections = [];
+    state.boxes = [];
+    state.mergedPolygons = [];
     state.pinCount = 0;
     state.selectedPin = null;
     state.isRouted = false;
@@ -463,6 +555,7 @@ function createApp(): void {
       case '2': setMode('place_obstacle'); break;
       case '3': setMode('connect'); break;
       case '4': setMode('delete'); break;
+      case '5': setMode('draw_box'); break;
       case 'r': routeBtn.click(); break;
       case 'g': randomBtn.click(); break;
       case 't': triToggle.checked = !triToggle.checked; triToggle.dispatchEvent(new Event('change')); break;
