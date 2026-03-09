@@ -7,6 +7,12 @@ import { Vertex, DEFAULT_PIN_RADIUS, DEFAULT_CLEARANCE, DEFAULT_TRACE_WIDTH } fr
 import { mergeBoxes, projectPointOutOfPolygons, type BoxObstacle } from './obstacles';
 import { DebugManager, type DebugSnapshot } from './debug';
 
+interface ViaPosition {
+  x: number;
+  y: number;
+  netId: number;
+}
+
 interface AppState {
   mode: 'place_pin' | 'place_obstacle' | 'connect' | 'delete' | 'draw_box';
   router: Router | null;
@@ -19,6 +25,8 @@ interface AppState {
   draggingPin: string | null;
   isRouted: boolean;
   showTriangulation: boolean;
+  showLayer0: boolean;
+  showLayer1: boolean;
   traceWidth: number;
   clearance: number;
   pinRadius: number;
@@ -26,6 +34,9 @@ interface AppState {
   mergedPolygons: { x: number; y: number }[][];
   boxDragStart: { x: number; y: number } | null;
   boxDragCurrent: { x: number; y: number } | null;
+  allDrawnSegments: import('./router').DrawnSegment[];
+  vias: ViaPosition[];
+  layer1NetCount: number;
 }
 
 const BOARD_SIZE = 140000;
@@ -45,6 +56,8 @@ function createApp(): void {
     draggingPin: null,
     isRouted: false,
     showTriangulation: true,
+    showLayer0: true,
+    showLayer1: true,
     traceWidth: DEFAULT_TRACE_WIDTH,
     clearance: DEFAULT_CLEARANCE,
     pinRadius: DEFAULT_PIN_RADIUS,
@@ -52,6 +65,9 @@ function createApp(): void {
     mergedPolygons: [],
     boxDragStart: null,
     boxDragCurrent: null,
+    allDrawnSegments: [],
+    vias: [],
+    layer1NetCount: 0,
   };
 
   state.renderer.setBoardBounds(0, 0, BOARD_SIZE, BOARD_SIZE);
@@ -84,6 +100,8 @@ function createApp(): void {
   const debugBackBtn = document.getElementById('debug-back') as HTMLButtonElement;
   const debugResetBtn = document.getElementById('debug-reset') as HTMLButtonElement;
   const debugInfo = document.getElementById('debug-info') as HTMLElement;
+  const layer0Toggle = document.getElementById('layer0-toggle') as HTMLInputElement;
+  const layer1Toggle = document.getElementById('layer1-toggle') as HTMLInputElement;
 
   function setStatus(msg: string): void {
     statusEl.textContent = msg;
@@ -118,8 +136,21 @@ function createApp(): void {
     }
   });
 
+  layer0Toggle.addEventListener('change', async () => {
+    state.showLayer0 = layer0Toggle.checked;
+    await render();
+  });
+
+  layer1Toggle.addEventListener('change', async () => {
+    state.showLayer1 = layer1Toggle.checked;
+    await render();
+  });
+
   async function rebuildRouter(): Promise<void> {
     Vertex.resetIds();
+    state.allDrawnSegments = [];
+    state.vias = [];
+    state.layer1NetCount = 0;
     state.router = new Router(0, 0, BOARD_SIZE, BOARD_SIZE);
     state.router.insertBorder();
 
@@ -181,6 +212,52 @@ function createApp(): void {
     state.isRouted = false;
   }
 
+  function routeOnRouter(router: Router): { routed: number; failed: number[] } {
+    const total = router.netlist.length;
+    let routed = 0;
+    const failed: number[] = [];
+
+    for (let i = 0; i < total; i++) {
+      if (router.route(i)) routed++;
+      else failed.push(i);
+    }
+    const stillFailed: number[] = [];
+    for (const i of failed) {
+      if (router.route(i, 3)) {
+        routed++;
+      } else {
+        stillFailed.push(i);
+      }
+    }
+    const finalFailed = stillFailed;
+
+    // Rubberband optimization
+    router.sortAttachedNets();
+    router.prepareSteps();
+    router.nubly();
+    router.prepareSteps();
+
+    router.sortAttachedNets();
+    router.prepareSteps();
+    router.nubly();
+    router.prepareSteps();
+
+    router.sortAttachedNets();
+    router.prepareSteps();
+    router.nubly(true);
+    router.sortAttachedNets();
+    router.prepareSteps();
+
+    // Fix crossing pairs
+    for (let pass = 0; pass < 10; pass++) {
+      router.fixCrossingPairs();
+      router.generateDrawnSegments();
+      if (router.countCrossings() === 0) break;
+    }
+
+    return { routed, failed: finalFailed };
+  }
+
   async function doRoute(): Promise<void> {
     if (!state.router) await rebuildRouter();
     if (!state.router) return;
@@ -196,52 +273,89 @@ function createApp(): void {
     }
 
     const t0 = performance.now();
-    let routed = 0;
-    const total = state.router.netlist.length;
+    const totalNets = state.router.netlist.length;
 
-    // Route all nets, then retry failed ones with higher detour factor
-    // (matching original pcbtr.rb retry logic)
-    const failed: number[] = [];
-    for (let i = 0; i < total; i++) {
-      if (state.router.route(i)) routed++;
-      else failed.push(i);
+    // --- Layer 0: route all nets ---
+    const layer0Result = routeOnRouter(state.router);
+    const layer0Segments = state.router.generateDrawnSegments();
+    // Tag all layer 0 segments
+    for (const seg of layer0Segments) seg.layer = 0;
+
+    const layer0Crossings = state.router.countCrossings();
+
+    // Collect failed net descriptions (from/to names) for layer 1
+    const failedNetDescs = layer0Result.failed.map(i => state.router!.netlist[i]);
+
+    let layer1Segments: import('./router').DrawnSegment[] = [];
+    state.vias = [];
+    state.layer1NetCount = 0;
+
+    // --- Layer 1: route failed nets ---
+    if (failedNetDescs.length > 0) {
+      // Build a separate router for layer 1
+      const layer1Router = new Router(0, 0, BOARD_SIZE, BOARD_SIZE);
+      layer1Router.insertBorder();
+
+      // Re-merge polygons
+      const mergedPolys = mergeBoxes(state.boxes);
+
+      // Insert all the same pins
+      for (const pin of state.pins) {
+        const projected = projectPointOutOfPolygons(pin.x, pin.y, mergedPolys);
+        layer1Router.insertVertex(
+          pin.name, projected.x, projected.y,
+          pin.isObstacle ? state.pinRadius * 2 : state.pinRadius,
+          state.clearance
+        );
+      }
+
+      // Insert polygon obstacles
+      for (const poly of mergedPolys) {
+        layer1Router.insertPolygonObstacle(poly);
+      }
+
+      await layer1Router.finishInit();
+
+      // Generate netlist for only the failed nets
+      layer1Router.generateNetlist(
+        failedNetDescs.map(nd => ({
+          from: nd.t1Name,
+          to: nd.t2Name,
+          traceWidth: nd.traceWidth,
+          traceClearance: nd.traceClearance
+        }))
+      );
+      layer1Router.sortNetlist();
+
+      // Route on layer 1
+      const layer1Result = routeOnRouter(layer1Router);
+      layer1Segments = layer1Router.generateDrawnSegments();
+
+      // Tag all layer 1 segments
+      for (const seg of layer1Segments) seg.layer = 1;
+
+      state.layer1NetCount = layer1Result.routed;
+
+      // Collect via positions: start and end terminals of layer-1 nets
+      for (const nd of layer1Router.netlist) {
+        const v1 = layer1Router.getVertices().find(v => v.name === nd.t1Name);
+        const v2 = layer1Router.getVertices().find(v => v.name === nd.t2Name);
+        if (v1) state.vias.push({ x: v1.x, y: v1.y, netId: nd.id });
+        if (v2) state.vias.push({ x: v2.x, y: v2.y, netId: nd.id });
+      }
     }
-    for (const i of failed) {
-      if (state.router.route(i, 3)) routed++;
-    }
 
-    // Rubberband optimization (matching original Ruby sequence)
-    state.router.sortAttachedNets();
-    state.router.prepareSteps();
-    state.router.nubly();
-    state.router.prepareSteps();
-
-    state.router.sortAttachedNets();
-    state.router.prepareSteps();
-    state.router.nubly();
-    state.router.prepareSteps();
-
-    state.router.sortAttachedNets();
-    state.router.prepareSteps();
-    state.router.nubly(true);
-    state.router.sortAttachedNets();
-    state.router.prepareSteps();
-
-    // Post-process: iteratively fix crossing pairs
-    for (let pass = 0; pass < 10; pass++) {
-      state.router.fixCrossingPairs();
-      state.router.generateDrawnSegments();
-      if (state.router.countCrossings() === 0) break;
-    }
-    const crossings = state.router.countCrossings();
+    // Combine segments from both layers
+    state.allDrawnSegments = [...layer0Segments, ...layer1Segments];
 
     // Emit final "done" debug step
     if (debugManager.active && state.router.onDebugStep) {
       const capturedState = state.router.captureState();
+      const routed = layer0Result.routed + state.layer1NetCount;
       debugManager.addSnapshot({
         step: 0,
         type: 'done',
-        description: `Done: ${routed}/${total} routed, ${crossings} crossings`,
+        description: `Done: ${routed}/${totalNets} routed, ${layer0Crossings} crossings`,
         vertices: capturedState.vertices,
         edges: capturedState.edges,
         cuts: capturedState.cuts,
@@ -254,15 +368,18 @@ function createApp(): void {
 
     const elapsed = (performance.now() - t0).toFixed(1);
     state.isRouted = true;
+    const totalRouted = layer0Result.routed + state.layer1NetCount;
 
     if (debugManager.active && debugManager.totalSteps > 0) {
-      // In debug mode, show the first snapshot
       debugManager.resetToStart();
       updateDebugUI();
       renderDebugSnapshot();
       setStatus(`Debug: ${debugManager.totalSteps} steps captured in ${elapsed}ms. Use Step/Back to navigate.`);
     } else {
-      setStatus(`Routed ${routed}/${total} nets in ${elapsed}ms${crossings > 0 ? `, ${crossings} visual overlaps` : ''}`);
+      const parts: string[] = [`Routed ${totalRouted}/${totalNets} nets in ${elapsed}ms`];
+      if (state.layer1NetCount > 0) parts.push(`${state.layer1NetCount} on layer 1, ${state.vias.length} vias`);
+      if (layer0Crossings > 0) parts.push(`${layer0Crossings} visual overlaps`);
+      setStatus(parts.join(', '));
       await render();
     }
   }
@@ -284,7 +401,10 @@ function createApp(): void {
 
     const obstacles = new Set(state.pins.filter(p => p.isObstacle).map(p => p.name));
     state.renderer.setBoardBounds(0, 0, BOARD_SIZE, BOARD_SIZE);
-    state.renderer.render(state.router, obstacles, state.connections, state.showTriangulation, state.mergedPolygons);
+    state.renderer.render(
+      state.router, obstacles, state.connections, state.showTriangulation, state.mergedPolygons,
+      state.allDrawnSegments, state.showLayer0, state.showLayer1, state.vias
+    );
 
     // Draw box preview while dragging
     if (state.boxDragStart && state.boxDragCurrent) {
@@ -497,6 +617,9 @@ function createApp(): void {
     state.pinCount = 0;
     state.selectedPin = null;
     state.isRouted = false;
+    state.allDrawnSegments = [];
+    state.vias = [];
+    state.layer1NetCount = 0;
     await rebuildRouter();
     await render();
     setStatus('Board cleared');

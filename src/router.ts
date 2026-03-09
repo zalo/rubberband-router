@@ -32,6 +32,7 @@ export interface DrawnSegment {
   startAngle?: number; endAngle?: number;
   width: number;
   netId: number;
+  layer: number;
 }
 
 export class Router {
@@ -1298,7 +1299,8 @@ export class Router {
               type: 'line',
               x1: t[0], y1: t[1], x2: t[2], y2: t[3],
               width: thi,
-              netId: n.id
+              netId: n.id,
+              layer: 0
             });
 
             if (lr > 0) {
@@ -1313,7 +1315,8 @@ export class Router {
                 r: lr,
                 startAngle, endAngle,
                 width: thi,
-                netId: n.id
+                netId: n.id,
+                layer: 0
               });
             }
 

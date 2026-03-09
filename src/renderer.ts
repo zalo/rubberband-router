@@ -130,15 +130,27 @@ export class Renderer {
     }
   }
 
-  drawRoutes(segments: DrawnSegment[]): void {
+  drawRoutes(segments: DrawnSegment[], showLayer0: boolean = true, showLayer1: boolean = true): void {
     const ctx = this.ctx;
 
     for (const seg of segments) {
+      const layer = seg.layer ?? 0;
+      if (layer === 0 && !showLayer0) continue;
+      if (layer === 1 && !showLayer1) continue;
+
       const color = NET_COLORS[seg.netId % NET_COLORS.length];
       ctx.strokeStyle = color;
       ctx.lineWidth = Math.max(seg.width * this.scale, 1.5);
       ctx.lineCap = 'round';
-      ctx.globalAlpha = 0.8;
+
+      // Layer 1: dashed lines, reduced opacity
+      if (layer === 1) {
+        ctx.globalAlpha = 0.55;
+        ctx.setLineDash([6, 4]);
+      } else {
+        ctx.globalAlpha = 0.8;
+        ctx.setLineDash([]);
+      }
 
       if (seg.type === 'line') {
         const [x1, y1] = this.toScreen(seg.x1, seg.y1);
@@ -154,8 +166,6 @@ export class Renderer {
           ctx.beginPath();
           const start = seg.startAngle!;
           const end = seg.endAngle!;
-          // Determine if we should go clockwise or counterclockwise
-          // by choosing the shorter arc
           let diff = end - start;
           if (diff > Math.PI) diff -= 2 * Math.PI;
           if (diff < -Math.PI) diff += 2 * Math.PI;
@@ -165,7 +175,33 @@ export class Renderer {
         }
       }
     }
+    ctx.setLineDash([]);
     ctx.globalAlpha = 1;
+  }
+
+  drawVias(vias: { x: number; y: number; netId: number }[]): void {
+    const ctx = this.ctx;
+    const outerRadius = 5;
+    const innerRadius = 2.5;
+
+    for (const via of vias) {
+      const [sx, sy] = this.toScreen(via.x, via.y);
+
+      // Outer ring (copper annular ring)
+      ctx.beginPath();
+      ctx.arc(sx, sy, outerRadius, 0, Math.PI * 2);
+      ctx.fillStyle = '#c0a050';
+      ctx.fill();
+      ctx.strokeStyle = '#e0c070';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+
+      // Inner circle (drill hole)
+      ctx.beginPath();
+      ctx.arc(sx, sy, innerRadius, 0, Math.PI * 2);
+      ctx.fillStyle = '#1a1a2e';
+      ctx.fill();
+    }
   }
 
   drawNetConnections(connections: { from: string; to: string }[], vertices: Vertex[]): void {
@@ -236,7 +272,11 @@ export class Renderer {
     obstacles: Set<string>,
     connections: { from: string; to: string }[],
     showTriangulation: boolean = true,
-    polygonObstacles: { x: number; y: number }[][] = []
+    polygonObstacles: { x: number; y: number }[][] = [],
+    allSegments?: DrawnSegment[],
+    showLayer0: boolean = true,
+    showLayer1: boolean = true,
+    vias?: { x: number; y: number; netId: number }[]
   ): void {
     this.updateTransform();
     this.clear();
@@ -245,8 +285,16 @@ export class Renderer {
     this.drawNetConnections(connections, router.getVertices());
     this.drawVertices(router, obstacles);
 
-    const segments = router.generateDrawnSegments();
-    this.drawRoutes(segments);
+    // Use provided multi-layer segments if available, otherwise generate from router
+    const segments = (allSegments && allSegments.length > 0)
+      ? allSegments
+      : router.generateDrawnSegments();
+    this.drawRoutes(segments, showLayer0, showLayer1);
+
+    // Draw vias on top
+    if (vias && vias.length > 0) {
+      this.drawVias(vias);
+    }
   }
 
   /**
